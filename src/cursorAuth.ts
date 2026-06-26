@@ -43,10 +43,10 @@ export class CursorAuthService {
         return this.readWorkosSessionTokenFromCookies(context);
     }
 
-    private static async getSql(extensionPath: string) {
+    private static async getSql(extensionPath: string): Promise<Awaited<ReturnType<typeof initSqlJs>>> {
         if (!this.sqlInit) {
             const sqlJsDist = path.join(extensionPath, 'node_modules', 'sql.js', 'dist');
-            this.sqlInit = initSqlJs({
+            this.sqlInit = await initSqlJs({
                 locateFile: (file: string) => path.join(sqlJsDist, file),
             });
         }
