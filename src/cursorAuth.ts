@@ -9,9 +9,9 @@ const COOKIE_NAME = 'WorkosCursorSessionToken';
 export class CursorAuthService {
     private static sqlInit: Awaited<ReturnType<typeof initSqlJs>> | undefined;
 
-    static getCursorUserDataPath(): string {
-        const logsPath = vscode.env.logsPath;
-        return path.resolve(logsPath, '..', '..');
+    static getCursorUserDataPath(context: vscode.ExtensionContext): string {
+        // .../Cursor/User/globalStorage/<extensionId> -> .../Cursor
+        return path.resolve(context.globalStorageUri.fsPath, '..', '..');
     }
 
     static isRunningInCursor(): boolean {
@@ -29,7 +29,7 @@ export class CursorAuthService {
         return `${COOKIE_NAME}=${trimmed}`;
     }
 
-    static async resolveSessionCookie(extensionPath: string): Promise<string | null> {
+    static async resolveSessionCookie(context: vscode.ExtensionContext): Promise<string | null> {
         const config = vscode.workspace.getConfiguration('cursorPriceTracking');
         const manualOverride = config.get<string>('sessionToken', '').trim();
         if (manualOverride) {
@@ -40,14 +40,14 @@ export class CursorAuthService {
             return null;
         }
 
-        return this.readWorkosSessionTokenFromCookies(extensionPath);
+        return this.readWorkosSessionTokenFromCookies(context);
     }
 
     private static async getSql(extensionPath: string) {
         if (!this.sqlInit) {
             const sqlJsDist = path.join(extensionPath, 'node_modules', 'sql.js', 'dist');
             this.sqlInit = initSqlJs({
-                locateFile: (file) => path.join(sqlJsDist, file),
+                locateFile: (file: string) => path.join(sqlJsDist, file),
             });
         }
         return this.sqlInit;
@@ -105,8 +105,8 @@ export class CursorAuthService {
         }
     }
 
-    static async readWorkosSessionTokenFromCookies(extensionPath: string): Promise<string | null> {
-        const userDataPath = this.getCursorUserDataPath();
+    static async readWorkosSessionTokenFromCookies(context: vscode.ExtensionContext): Promise<string | null> {
+        const userDataPath = this.getCursorUserDataPath(context);
         const cookiesPath = this.findCookiesDatabasePath(userDataPath);
         if (!cookiesPath) {
             return null;
@@ -116,7 +116,7 @@ export class CursorAuthService {
         let db: Database | undefined;
 
         try {
-            const SQL = await this.getSql(extensionPath);
+            const SQL = await this.getSql(context.extensionPath);
             const buffer = fs.readFileSync(tempDbPath);
             db = new SQL.Database(buffer);
             const token = this.queryCookieValue(db);

@@ -289,10 +289,10 @@ class PriceDataProvider implements vscode.TreeDataProvider<PriceItem | SessionCa
     private usageData: UsageEvent[] = [];
     private sessionToken: string = '';
     private statusBarManager: StatusBarManager | undefined;
-    private readonly extensionPath: string;
+    private readonly extensionContext: vscode.ExtensionContext;
 
     constructor(context: vscode.ExtensionContext) {
-        this.extensionPath = context.extensionPath;
+        this.extensionContext = context;
     }
 
     setStatusBarManager(statusBarManager: StatusBarManager): void {
@@ -300,7 +300,7 @@ class PriceDataProvider implements vscode.TreeDataProvider<PriceItem | SessionCa
     }
 
     private async loadSessionToken(): Promise<void> {
-        this.sessionToken = (await CursorAuthService.resolveSessionCookie(this.extensionPath)) ?? '';
+        this.sessionToken = (await CursorAuthService.resolveSessionCookie(this.extensionContext)) ?? '';
     }
 
     private noSessionMessage(): string {
@@ -432,10 +432,10 @@ class StatusBarManager {
     private statusBarItem: vscode.StatusBarItem;
     private isLoading: boolean = false;
     private currentUsageEvent: UsageEvent | null = null;
-    private readonly extensionPath: string;
+    private readonly extensionContext: vscode.ExtensionContext;
 
     constructor(context: vscode.ExtensionContext) {
-        this.extensionPath = context.extensionPath;
+        this.extensionContext = context;
         this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
         this.statusBarItem.command = 'cursorPriceTracking.refresh';
         this.statusBarItem.tooltip = "Click to refresh Cursor usage data";
@@ -449,7 +449,7 @@ class StatusBarManager {
     }
 
     private async getSessionCookie(): Promise<string | null> {
-        return CursorAuthService.resolveSessionCookie(this.extensionPath);
+        return CursorAuthService.resolveSessionCookie(this.extensionContext);
     }
 
     private updateDisplay(): void {
