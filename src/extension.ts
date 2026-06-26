@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as https from 'https';
+import { CursorAuthService } from './cursorAuth';
 
 interface UsageEvent {
     timestamp: string;
@@ -288,9 +289,10 @@ class PriceDataProvider implements vscode.TreeDataProvider<PriceItem | SessionCa
     private usageData: UsageEvent[] = [];
     private sessionToken: string = '';
     private statusBarManager: StatusBarManager | undefined;
+    private readonly extensionPath: string;
 
-    constructor() {
-        this.loadSessionToken();
+    constructor(context: vscode.ExtensionContext) {
+        this.extensionPath = context.extensionPath;
     }
 
     setStatusBarManager(statusBarManager: StatusBarManager): void {
@@ -298,21 +300,14 @@ class PriceDataProvider implements vscode.TreeDataProvider<PriceItem | SessionCa
     }
 
     private async loadSessionToken(): Promise<void> {
-        const config = vscode.workspace.getConfiguration('cursorPriceTracking');
-        this.sessionToken = config.get('sessionToken', '');
-        
-        if (!this.sessionToken) {
-            const token = await vscode.window.showInputBox({
-                prompt: 'Enter your Cursor session token',
-                password: true,
-                placeHolder: 'WorkosCursorSessionToken value from browser cookies'
-            });
-            
-            if (token) {
-                this.sessionToken = token;
-                await config.update('sessionToken', token, vscode.ConfigurationTarget.Global);
-            }
+        this.sessionToken = (await CursorAuthService.resolveSessionCookie(this.extensionPath)) ?? '';
+    }
+
+    private noSessionMessage(): string {
+        if (!CursorAuthService.isRunningInCursor()) {
+            return 'Install and run in Cursor IDE';
         }
+        return 'Log in to Cursor (cursor.com account)';
     }
 
     getTreeItem(element: PriceItem | SessionCard): vscode.TreeItem {
@@ -321,12 +316,14 @@ class PriceDataProvider implements vscode.TreeDataProvider<PriceItem | SessionCa
 
     async getChildren(element?: PriceItem | SessionCard): Promise<(PriceItem | SessionCard)[]> {
         if (!element) {
+            await this.loadSessionToken();
+
             if (!this.sessionToken) {
                 // Update status bar to show no token state
                 if (this.statusBarManager) {
                     this.statusBarManager.showNoToken();
                 }
-                return [new PriceItem('No session token', 'Configure in settings')];
+                return [new PriceItem('No session found', this.noSessionMessage())];
             }
 
             try {
@@ -366,7 +363,7 @@ class PriceDataProvider implements vscode.TreeDataProvider<PriceItem | SessionCa
                 if (this.statusBarManager) {
                     this.statusBarManager.showError();
                 }
-                return [new PriceItem('Error fetching data', 'Check token/connection')];
+                return [new PriceItem('Error fetching data', 'Check login / network')];
             }
         }
         return [];
@@ -399,33 +396,32 @@ class PriceDataProvider implements vscode.TreeDataProvider<PriceItem | SessionCa
         this._onDidChangeTreeData.fire();
     }
 
-    async setToken(): Promise<void> {
-        const token = await vscode.window.showInputBox({
-            prompt: 'Enter your Cursor session token',
-            password: true,
-            placeHolder: 'WorkosCursorSessionToken value from browser cookies'
-        });
-        
-        if (token) {
-            const formattedToken = `WorkosCursorSessionToken=${token}`;
-            this.sessionToken = formattedToken;
-            const config = vscode.workspace.getConfiguration('cursorPriceTracking');
-            await config.update('sessionToken', formattedToken, vscode.ConfigurationTarget.Global);
-            this._onDidChangeTreeData.fire();
+    async reloadSessionFromCursor(): Promise<void> {
+        await this.loadSessionToken();
+        if (this.sessionToken) {
+            vscode.window.showInformationMessage('Session loaded from Cursor cookies.');
+        } else if (!CursorAuthService.isRunningInCursor()) {
+            vscode.window.showWarningMessage('This extension must run inside Cursor to read session cookies automatically.');
+        } else {
+            vscode.window.showWarningMessage(
+                'Could not read WorkosCursorSessionToken. Sign in to your Cursor account in this app, then try again.'
+            );
         }
+        this._onDidChangeTreeData.fire();
     }
 
-    async clearToken(): Promise<void> {
+    async clearManualTokenOverride(): Promise<void> {
         const confirm = await vscode.window.showWarningMessage(
-            'Are you sure you want to clear the stored token?',
+            'Clear the manual session token override in settings?',
             'Yes',
             'No'
         );
-        
+
         if (confirm === 'Yes') {
             this.sessionToken = '';
             const config = vscode.workspace.getConfiguration('cursorPriceTracking');
             await config.update('sessionToken', '', vscode.ConfigurationTarget.Global);
+            await this.loadSessionToken();
             this._onDidChangeTreeData.fire();
         }
     }
@@ -436,9 +432,10 @@ class StatusBarManager {
     private statusBarItem: vscode.StatusBarItem;
     private isLoading: boolean = false;
     private currentUsageEvent: UsageEvent | null = null;
-    private sessionToken: string = '';
+    private readonly extensionPath: string;
 
     constructor(context: vscode.ExtensionContext) {
+        this.extensionPath = context.extensionPath;
         this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
         this.statusBarItem.command = 'cursorPriceTracking.refresh';
         this.statusBarItem.tooltip = "Click to refresh Cursor usage data";
@@ -451,9 +448,8 @@ class StatusBarManager {
         context.subscriptions.push(this.statusBarItem);
     }
 
-    async loadSessionToken(): Promise<void> {
-        const config = vscode.workspace.getConfiguration('cursorPriceTracking');
-        this.sessionToken = config.get('sessionToken', '');
+    private async getSessionCookie(): Promise<string | null> {
+        return CursorAuthService.resolveSessionCookie(this.extensionPath);
     }
 
     private updateDisplay(): void {
@@ -563,16 +559,18 @@ class StatusBarManager {
         this.updateDisplay();
 
         try {
-            await this.loadSessionToken();
-            
-            if (!this.sessionToken) {
-                vscode.window.showWarningMessage('No Cursor session token configured. Use "Set Token" command first.');
+            const sessionToken = await this.getSessionCookie();
+
+            if (!sessionToken) {
+                vscode.window.showWarningMessage(
+                    'No Cursor session cookie found. Log in to Cursor, or set an optional manual override in settings.'
+                );
                 this.isLoading = false;
                 this.updateDisplay();
                 return;
             }
 
-            const usageData = await ApiService.fetchUsageData(this.sessionToken, 'last30m');
+            const usageData = await ApiService.fetchUsageData(sessionToken, 'last30m');
             if (usageData.length > 0) {
                 const sortedData = usageData.sort((a, b) => parseInt(b.timestamp) - parseInt(a.timestamp));
                 this.currentUsageEvent = sortedData[0];
@@ -618,15 +616,15 @@ class StatusBarManager {
         this.statusBarItem.text = "Cursor: Error";
         this.statusBarItem.color = new vscode.ThemeColor('statusBarItem.errorForeground');
         this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
-        this.statusBarItem.tooltip = "Failed to load Cursor pricing data. Click to retry or configure token.";
+        this.statusBarItem.tooltip = "Failed to load Cursor pricing data. Click to retry.";
     }
 
     showNoToken(): void {
         this.isLoading = false;
-        this.statusBarItem.text = "Cursor: No Token";
+        this.statusBarItem.text = "Cursor: No Session";
         this.statusBarItem.color = new vscode.ThemeColor('statusBarItem.warningForeground');
         this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-        this.statusBarItem.tooltip = "No session token configured. Click to configure token.";
+        this.statusBarItem.tooltip = "Not logged in to Cursor or cookie unreadable. Click to refresh.";
     }
 }
 
@@ -637,7 +635,7 @@ export function activate(context: vscode.ExtensionContext) {
     const statusBarManager = new StatusBarManager(context);
 
     // Create tree data provider
-    const priceDataProvider = new PriceDataProvider();
+    const priceDataProvider = new PriceDataProvider(context);
     const treeView = vscode.window.createTreeView('cursorPrices', {
         treeDataProvider: priceDataProvider
     });
@@ -653,13 +651,13 @@ export function activate(context: vscode.ExtensionContext) {
 
 
     const configureCommand = vscode.commands.registerCommand('cursorPriceTracking.configure', async () => {
-        await priceDataProvider.setToken();
+        await priceDataProvider.reloadSessionFromCursor();
         statusBarManager.refreshData();
     });
 
     const resetCommand = vscode.commands.registerCommand('cursorPriceTracking.reset', async () => {
-        await priceDataProvider.clearToken();
-        statusBarManager.updateCost(0);
+        await priceDataProvider.clearManualTokenOverride();
+        statusBarManager.refreshData();
     });
 
 

@@ -61,12 +61,12 @@
       },
       {
         "command": "cursorPriceTracking.configure",
-        "title": "Configure Session Token",
+        "title": "Reload Session from Cursor",
         "category": "Cursor Price Tracking"
       },
       {
         "command": "cursorPriceTracking.reset",
-        "title": "Reset Configuration",
+        "title": "Clear Manual Token Override",
         "category": "Cursor Price Tracking"
       }
     ],
@@ -76,8 +76,8 @@
         "cursorPriceTracking.sessionToken": {
           "type": "string",
           "default": "",
-          "description": "Your Cursor session token for API authentication. Extract the 'WorkosCursorSessionToken' cookie value from cursor.com while logged in.",
-          "markdownDescription": "Your Cursor session token for API authentication.\n\n**How to get your token:**\n1. Go to [cursor.com](https://cursor.com) and log in\n2. Open browser DevTools (F12)\n3. Go to Application/Storage > Cookies\n4. Copy the `WorkosCursorSessionToken` value\n5. Paste it here or use the 'Configure Session Token' command"
+          "description": "Optional manual session cookie override. Leave empty to read WorkosCursorSessionToken from this Cursor install automatically.",
+          "markdownDescription": "Optional override for the `WorkosCursorSessionToken` cookie.\n\nLeave **empty** (default): the extension reads the cookie from the **current Cursor** user data folder (`Network/Cookies`).\n\nSet a value only if automatic detection fails."
         }
       }
     },
@@ -113,12 +113,15 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "npm run compile && npx --yes @vscode/vsce@latest package --no-dependencies",
+    "package": "npm run compile && npx --yes @vscode/vsce@latest package",
     "install:extension": "npm run package && code --install-extension cursor-price-tracking-0.0.1.vsix"
   },
   "devDependencies": {
     "@types/vscode": "^1.95.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "sql.js": "^1.12.0"
   }
 }
