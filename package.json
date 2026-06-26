@@ -113,7 +113,8 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "install": "vsce package && code --install-extension cursor-price-tracking-0.0.1.vsix"
+    "package": "npm run compile && npx --yes @vscode/vsce@latest package --no-dependencies",
+    "install:extension": "npm run package && code --install-extension cursor-price-tracking-0.0.1.vsix"
   },
   "devDependencies": {
     "@types/vscode": "^1.95.0",
