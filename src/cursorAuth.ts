@@ -3,15 +3,22 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import initSqlJs, { Database } from 'sql.js';
+import { decryptChromiumCookieValue, resolveLocalStatePath } from './chromiumCookieDecrypt';
 
 const COOKIE_NAME = 'WorkosCursorSessionToken';
+
+export type SessionTokenInspectResult =
+    | { status: 'ok'; cookiesDbPath: string }
+    | { status: 'no_cookies_file' }
+    | { status: 'missing'; cookiesDbPath: string }
+    | { status: 'encrypted'; cookiesDbPath: string };
 
 export class CursorAuthService {
     private static sqlInit: Awaited<ReturnType<typeof initSqlJs>> | undefined;
 
     static getCursorUserDataPath(context: vscode.ExtensionContext): string {
         // .../Cursor/User/globalStorage/<extensionId> -> .../Cursor
-        return path.resolve(context.globalStorageUri.fsPath, '..', '..');
+        return path.resolve(context.globalStorageUri.fsPath, '..', '..', '..');
     }
 
     /** Candidate Cursor user-data dirs (Electron profile roots). */
@@ -26,6 +33,14 @@ export class CursorAuthService {
         } else {
             candidates.push(path.join(home, '.config', 'Cursor'));
             candidates.push(path.join(home, '.cursor'));
+            for (const flatpakId of [
+                'io.io.cursor',
+                'io.github.cursor.Cursor',
+                'com.cursor.Cursor',
+                'dev.cursor.Cursor',
+            ]) {
+                candidates.push(path.join(home, '.var', 'app', flatpakId, 'config', 'Cursor'));
+            }
         }
 
         return [...new Set(candidates.map((p) => path.resolve(p)))];
@@ -54,17 +69,22 @@ export class CursorAuthService {
         return roots;
     }
 
-    static findCookiesDatabaseAtRoot(userDataPath: string): string | null {
-        const candidates = [
-            path.join(userDataPath, 'Network', 'Cookies'),
-            path.join(userDataPath, 'Cookies'),
-        ];
-        for (const candidate of candidates) {
-            if (fs.existsSync(candidate)) {
-                return candidate;
-            }
+    static listCookiesDatabasePathsAtRoot(userDataPath: string): string[] {
+        const paths: string[] = [];
+        const network = path.join(userDataPath, 'Network', 'Cookies');
+        const legacy = path.join(userDataPath, 'Cookies');
+        if (fs.existsSync(network)) {
+            paths.push(network);
         }
-        return null;
+        if (fs.existsSync(legacy) && !paths.includes(legacy)) {
+            paths.push(legacy);
+        }
+        return paths;
+    }
+
+    static findCookiesDatabaseAtRoot(userDataPath: string): string | null {
+        const paths = this.listCookiesDatabasePathsAtRoot(userDataPath);
+        return paths[0] ?? null;
     }
 
     static findCookiesFileInDirectory(rootDir: string): string | null {
@@ -92,7 +112,27 @@ export class CursorAuthService {
             return direct;
         }
 
-        return this.walkForCookiesFile(rootDir, 4);
+        const walked = this.walkForCookiesFile(rootDir, 4);
+        return walked;
+    }
+
+    static listAllCookiesDatabasePaths(context: vscode.ExtensionContext): string[] {
+        const paths: string[] = [];
+        for (const root of this.getSearchRootDirectories(context)) {
+            if (!fs.existsSync(root)) {
+                continue;
+            }
+            for (const p of this.listCookiesDatabasePathsAtRoot(root)) {
+                if (!paths.includes(p)) {
+                    paths.push(p);
+                }
+            }
+            const walked = this.walkForCookiesFile(root, 4);
+            if (walked && !paths.includes(walked)) {
+                paths.push(walked);
+            }
+        }
+        return paths;
     }
 
     private static walkForCookiesFile(dir: string, depthRemaining: number): string | null {
@@ -160,7 +200,7 @@ export class CursorAuthService {
             return `未找到 Cookie 数据库。已检查：${userDataPaths.join('；')}。请确认已在 Cursor 登录账号。`;
         }
 
-        return '已找到 Cookie 文件，但没有可读的 WorkosCursorSessionToken（可能未登录，或 Cookie 被系统加密）。可尝试命令「Reload Session from Cursor」，或在设置里填写 cursorPriceTracking.sessionToken 作为备用。';
+        return '已找到 Cookie 文件，但读不到 WorkosCursorSessionToken：请在 cursor.com 登录、尝试 Network/Cookies，或在设置填写 sessionToken。';
     }
 
     static isRunningInCursor(): boolean {
@@ -203,13 +243,8 @@ export class CursorAuthService {
     }
 
     private static findAnyCookiesDatabasePath(context: vscode.ExtensionContext): string | null {
-        for (const root of this.getSearchRootDirectories(context)) {
-            const cookiesPath = this.findCookiesFileInDirectory(root);
-            if (cookiesPath) {
-                return cookiesPath;
-            }
-        }
-        return null;
+        const all = this.listAllCookiesDatabasePaths(context);
+        return all[0] ?? null;
     }
 
     private static copySqliteDatabaseToTemp(basePath: string): string {
@@ -226,7 +261,7 @@ export class CursorAuthService {
         return tmpBase;
     }
 
-    private static queryCookieValue(db: Database): { token: string | null; encryptedOnly: boolean } {
+    private static queryCookieValue(db: Database, cookiesDbPath: string): { token: string | null; encryptedOnly: boolean; missing: boolean } {
         const statement = db.prepare(
             `SELECT value, encrypted_value FROM cookies
              WHERE name = ?
@@ -236,52 +271,107 @@ export class CursorAuthService {
         try {
             statement.bind([COOKIE_NAME]);
             if (!statement.step()) {
-                return { token: null, encryptedOnly: false };
+                return { token: null, encryptedOnly: false, missing: true };
             }
             const row = statement.getAsObject() as { value?: string; encrypted_value?: Uint8Array };
             if (row.value && row.value.length > 0) {
-                return { token: row.value, encryptedOnly: false };
+                return { token: row.value, encryptedOnly: false, missing: false };
             }
             if (row.encrypted_value && row.encrypted_value.length > 0) {
-                return { token: null, encryptedOnly: true };
+                const localStatePath = resolveLocalStatePath(cookiesDbPath);
+                const decrypted = decryptChromiumCookieValue(row.encrypted_value, localStatePath);
+                if (decrypted) {
+                    return { token: decrypted, encryptedOnly: false, missing: false };
+                }
+                return { token: null, encryptedOnly: true, missing: false };
             }
-            return { token: null, encryptedOnly: false };
+            return { token: null, encryptedOnly: false, missing: false };
         } finally {
             statement.free();
         }
     }
 
-    static async readWorkosSessionTokenFromCookies(context: vscode.ExtensionContext): Promise<string | null> {
-        const cookiesPath = this.findAnyCookiesDatabasePath(context);
-        if (!cookiesPath) {
-            return null;
+    static async inspectSessionToken(context: vscode.ExtensionContext): Promise<SessionTokenInspectResult> {
+        const paths = this.listAllCookiesDatabasePaths(context);
+        if (paths.length === 0) {
+            return { status: 'no_cookies_file' };
         }
 
-        const tempDbPath = this.copySqliteDatabaseToTemp(cookiesPath);
-        let db: Database | undefined;
+        const SQL = await this.getSql(context.extensionPath);
+        let lastMissing: string | null = null;
+        let lastEncrypted: string | null = null;
 
-        try {
-            const SQL = await this.getSql(context.extensionPath);
-            const buffer = fs.readFileSync(tempDbPath);
-            db = new SQL.Database(buffer);
-            const { token, encryptedOnly } = this.queryCookieValue(db);
-            if (encryptedOnly) {
-                console.warn(
-                    'WorkosCursorSessionToken is encrypted in the Cookies DB; set cursorPriceTracking.sessionToken manually.'
-                );
-            }
-            return token ? this.formatCookieHeader(token) : null;
-        } catch (error) {
-            console.error('Failed to read Cursor session cookie:', error);
-            return null;
-        } finally {
-            db?.close();
-            for (const suffix of ['', '-wal', '-shm']) {
-                const file = tempDbPath + suffix;
-                if (fs.existsSync(file)) {
-                    fs.unlinkSync(file);
+        for (const cookiesPath of paths) {
+            const tempDbPath = this.copySqliteDatabaseToTemp(cookiesPath);
+            let db: Database | undefined;
+            try {
+                const buffer = fs.readFileSync(tempDbPath);
+                db = new SQL.Database(buffer);
+                const { token, encryptedOnly, missing } = this.queryCookieValue(db, cookiesPath);
+                if (token) {
+                    return { status: 'ok', cookiesDbPath: cookiesPath };
                 }
+                if (missing) {
+                    lastMissing = cookiesPath;
+                } else if (encryptedOnly) {
+                    lastEncrypted = cookiesPath;
+                }
+            } catch {
+                // try next db
+            } finally {
+                db?.close();
+                this.cleanupTempDb(tempDbPath);
             }
         }
+
+        if (lastEncrypted) {
+            return { status: 'encrypted', cookiesDbPath: lastEncrypted };
+        }
+        if (lastMissing) {
+            return { status: 'missing', cookiesDbPath: lastMissing };
+        }
+        return { status: 'missing', cookiesDbPath: paths[0] };
+    }
+
+    private static cleanupTempDb(tempDbPath: string): void {
+        for (const suffix of ['', '-wal', '-shm']) {
+            const file = tempDbPath + suffix;
+            if (fs.existsSync(file)) {
+                fs.unlinkSync(file);
+            }
+        }
+    }
+
+    static async readWorkosSessionTokenFromCookies(context: vscode.ExtensionContext): Promise<string | null> {
+        const paths = this.listAllCookiesDatabasePaths(context);
+        if (paths.length === 0) {
+            return null;
+        }
+
+        const SQL = await this.getSql(context.extensionPath);
+
+        for (const cookiesPath of paths) {
+            const tempDbPath = this.copySqliteDatabaseToTemp(cookiesPath);
+            let db: Database | undefined;
+
+            try {
+                const buffer = fs.readFileSync(tempDbPath);
+                db = new SQL.Database(buffer);
+                const { token, encryptedOnly } = this.queryCookieValue(db, cookiesPath);
+                if (encryptedOnly) {
+                    console.warn(`WorkosCursorSessionToken encrypted in ${cookiesPath}`);
+                }
+                if (token) {
+                    return this.formatCookieHeader(token);
+                }
+            } catch (error) {
+                console.error(`Failed to read cookies DB ${cookiesPath}:`, error);
+            } finally {
+                db?.close();
+                this.cleanupTempDb(tempDbPath);
+            }
+        }
+
+        return null;
     }
 }

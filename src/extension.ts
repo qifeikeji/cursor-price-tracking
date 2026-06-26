@@ -300,11 +300,36 @@ class PriceDataProvider implements vscode.TreeDataProvider<PriceItem | SessionCa
         this.statusBarManager = statusBarManager;
     }
 
+    private sessionFailureHint: string = '';
+
     private async loadSessionToken(): Promise<void> {
         this.sessionToken = (await CursorAuthService.resolveSessionCookie(this.extensionContext)) ?? '';
+        if (!this.sessionToken) {
+            const inspect = await CursorAuthService.inspectSessionToken(this.extensionContext);
+            switch (inspect.status) {
+                case 'encrypted':
+                    this.sessionFailureHint =
+                        'Cookie 已加密；请在设置填写 Session Token，或检查 Network/Cookies';
+                    break;
+                case 'missing':
+                    this.sessionFailureHint =
+                        'Cookie 库无登录项；请在 Cursor 登录 cursor.com（可试 Network/Cookies）';
+                    break;
+                case 'no_cookies_file':
+                    this.sessionFailureHint = CursorAuthService.describeSessionReadFailure(this.extensionContext);
+                    break;
+                default:
+                    this.sessionFailureHint = CursorAuthService.describeSessionReadFailure(this.extensionContext);
+            }
+        } else {
+            this.sessionFailureHint = '';
+        }
     }
 
     private noSessionMessage(): string {
+        if (this.sessionFailureHint) {
+            return this.sessionFailureHint;
+        }
         if (!CursorAuthService.isRunningInCursor()) {
             return 'Install and run in Cursor IDE';
         }

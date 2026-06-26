@@ -2,13 +2,14 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { CursorAuthService } from './cursorAuth';
+import { CursorAuthService, SessionTokenInspectResult } from './cursorAuth';
 
 export interface CookieScanResult {
     cookiesFilePath: string | null;
     foundInManualFolder: boolean;
     manualFolder: string | null;
     searchedRoots: { path: string; exists: boolean; note: string }[];
+    sessionInspect: SessionTokenInspectResult | null;
 }
 
 const CONFIG_SECTION = 'cursorPriceTracking';
@@ -84,10 +85,49 @@ export function scanForCookiesFile(context: vscode.ExtensionContext): CookieScan
         foundInManualFolder: Boolean(manualFolder && cookiesFilePath && foundInManualFolder),
         manualFolder,
         searchedRoots,
+        sessionInspect: null,
     };
 }
 
-function formatScanStatusForSettings(context: vscode.ExtensionContext, result: CookieScanResult): string {
+export async function scanForCookiesFileAsync(
+    context: vscode.ExtensionContext
+): Promise<CookieScanResult> {
+    const base = scanForCookiesFile(context);
+    const sessionInspect = await CursorAuthService.inspectSessionToken(context);
+    return { ...base, sessionInspect };
+}
+
+function formatSessionInspectLines(inspect: SessionTokenInspectResult | null): string[] {
+    if (!inspect) {
+        return [];
+    }
+    switch (inspect.status) {
+        case 'ok':
+            return ['🟢 WorkosCursorSessionToken: 已成功读取', `   使用的 Cookie 库: ${inspect.cookiesDbPath}`];
+        case 'missing':
+            return [
+                '⚠️ 已找到 Cookie 文件，但库中没有 WorkosCursorSessionToken',
+                '   请在 Cursor 内打开 https://cursor.com 并登录账号后重试',
+                `   检查的库: ${inspect.cookiesDbPath}`,
+                '   提示: 真实 Session 可能在 Network/Cookies，扩展会依次尝试所有 Cookie 库',
+            ];
+        case 'encrypted':
+            return [
+                '⚠️ 找到 WorkosCursorSessionToken，但被系统加密，扩展无法解密',
+                `   库: ${inspect.cookiesDbPath}`,
+                '   请在设置 cursorPriceTracking.sessionToken 中手动粘贴浏览器 Cookie 值',
+            ];
+        case 'no_cookies_file':
+            return ['未找到任何 Cookie 数据库文件'];
+        default:
+            return [];
+    }
+}
+
+function formatScanStatusForSettings(
+    context: vscode.ExtensionContext,
+    result: CookieScanResult
+): string {
     const autoRoot = CursorAuthService.getCursorUserDataPath(context);
     const lines: string[] = [];
 
@@ -115,6 +155,8 @@ function formatScanStatusForSettings(context: vscode.ExtensionContext, result: C
     }
 
     lines.push('');
+    lines.push(...formatSessionInspectLines(result.sessionInspect));
+    lines.push('');
     lines.push(`自动检测的 Cursor 用户数据目录: ${autoRoot}`);
     lines.push('');
     lines.push('本次扫描的文件夹:');
@@ -127,7 +169,7 @@ function formatScanStatusForSettings(context: vscode.ExtensionContext, result: C
 }
 
 export async function refreshCookiesScanStatus(context: vscode.ExtensionContext): Promise<CookieScanResult> {
-    const result = scanForCookiesFile(context);
+    const result = await scanForCookiesFileAsync(context);
     const text = formatScanStatusForSettings(context, result);
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
     await config.update(KEY_SCAN_STATUS, text, vscode.ConfigurationTarget.Global);
