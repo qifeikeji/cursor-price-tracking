@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as https from 'https';
 import { CursorAuthService } from './cursorAuth';
+import { refreshCookiesScanStatus, registerCookiesScanStatusWatcher } from './cookieScanStatus';
 
 interface UsageEvent {
     timestamp: string;
@@ -370,6 +371,7 @@ class PriceDataProvider implements vscode.TreeDataProvider<PriceItem | SessionCa
     }
 
     async refresh(): Promise<void> {
+        await refreshCookiesScanStatus(this.extensionContext);
         await this.loadSessionToken();
         
         // Directly fetch data and update status bar to ensure it's not stuck on loading
@@ -397,15 +399,25 @@ class PriceDataProvider implements vscode.TreeDataProvider<PriceItem | SessionCa
     }
 
     async reloadSessionFromCursor(): Promise<void> {
+        await refreshCookiesScanStatus(this.extensionContext);
         await this.loadSessionToken();
         if (this.sessionToken) {
             vscode.window.showInformationMessage('Session loaded from Cursor cookies.');
         } else if (!CursorAuthService.isRunningInCursor()) {
-            vscode.window.showWarningMessage('This extension must run inside Cursor to read session cookies automatically.');
-        } else {
             vscode.window.showWarningMessage(
-                'Could not read WorkosCursorSessionToken. Sign in to your Cursor account in this app, then try again.'
+                'This extension must run inside Cursor to read session cookies automatically.'
             );
+        } else {
+            const detail = CursorAuthService.diagnose(this.extensionContext);
+            console.error('Cursor Price Tracking — session diagnostics:\n' + detail);
+            vscode.window.showWarningMessage(
+                'Could not read WorkosCursorSessionToken. Open Output → Log (Extension Host) for paths, or paste token in Settings.',
+                'Show Log'
+            ).then((choice) => {
+                if (choice === 'Show Log') {
+                    vscode.commands.executeCommand('workbench.action.showLogs');
+                }
+            });
         }
         this._onDidChangeTreeData.fire();
     }
@@ -666,11 +678,12 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(resetCommand);
     context.subscriptions.push(treeView);
 
-    // Auto-fetch data when VSCode opens - start immediately
-    priceDataProvider.refresh().catch(() => {
-        // If initial load fails, show error state in status bar
-        statusBarManager.showError();
-    });
+    const runFullRefresh = () =>
+        priceDataProvider.refresh().catch(() => statusBarManager.showError());
+
+    registerCookiesScanStatusWatcher(context, runFullRefresh);
+
+    void runFullRefresh();
 }
 
 export function deactivate() {}

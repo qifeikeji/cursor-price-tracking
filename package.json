@@ -73,11 +73,25 @@
     "configuration": {
       "title": "Cursor Price Tracking",
       "properties": {
+        "cursorPriceTracking.cookiesScanStatus": {
+          "type": "string",
+          "default": "扩展启动后将自动扫描 Cookie 路径并更新本字段。",
+          "markdownDescription": "<span style=\"color: var(--vscode-gitDecoration-addedResourceForeground);\">Cookie 扫描状态</span>（由扩展自动写入；找到后会在此显示 **🟢 已经找到** 及 Cookie 文件的完整路径）。修改「Cookies 搜索文件夹」或执行 **Reload Session from Cursor** 会重新扫描。",
+          "editPresentation": "multilineText",
+          "order": 0
+        },
+        "cursorPriceTracking.cookiesSearchPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "<span style=\"color: var(--vscode-gitDecoration-addedResourceForeground);\">Cookies 搜索文件夹</span>（可选）。在此填写 Cursor 用户数据目录，例如 `~/.config/Cursor`；扩展会在该文件夹内查找 `Network/Cookies` 或名为 `Cookies` 的数据库文件。留空则仅按当前 Cursor 安装路径自动检测。",
+          "order": 1
+        },
         "cursorPriceTracking.sessionToken": {
           "type": "string",
           "default": "",
           "description": "Optional manual session cookie override. Leave empty to read WorkosCursorSessionToken from this Cursor install automatically.",
-          "markdownDescription": "Optional override for the `WorkosCursorSessionToken` cookie.\n\nLeave **empty** (default): the extension reads the cookie from the **current Cursor** user data folder (`Network/Cookies`).\n\nSet a value only if automatic detection fails."
+          "markdownDescription": "Optional override for the `WorkosCursorSessionToken` cookie.\n\nLeave **empty** (default): the extension reads the cookie from the **current Cursor** user data folder (`Network/Cookies`).\n\nSet a value only if automatic detection fails.",
+          "order": 2
         }
       }
     },
